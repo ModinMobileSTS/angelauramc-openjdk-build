@@ -33,6 +33,10 @@ jobs:
         run: |
           grep -F 'define_pd_global(bool, ImplicitNullChecks,       false)' \
             openjdk/hotspot/src/cpu/aarch64/vm/globals_aarch64.hpp
+          grep -F 'class C1ExplicitNullCheckStub' \
+            openjdk/hotspot/src/cpu/aarch64/vm/c1_LIRAssembler_aarch64.cpp
+          grep -F 'void LIR_Assembler::explicit_null_check' \
+            openjdk/hotspot/src/cpu/aarch64/vm/c1_LIRAssembler_aarch64.cpp
           grep -F '$2CXXSTD_CXXFLAG="-std=gnu++11"' \
             openjdk/common/autoconf/flags.m4
           test ! -e openjdk/common/autoconf/flags.m4.rej

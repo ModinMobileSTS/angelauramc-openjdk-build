@@ -6,16 +6,24 @@ Based on [Java for Android](http://openjdk.java.net/projects/mobile/android.html
 
 ## Building 
 
-The Android AArch64 build applies `patches/jdk8u_android_aarch64_explicit_null_checks.diff`.
-This first runtime layer makes HotSpot C2 keep its Java null checks explicit instead
-of turning them into implicit SIGSEGV traps. Java exception behavior is unchanged;
+The Android AArch64 build applies
+`patches/jdk8u_android_aarch64_explicit_null_checks.diff` and
+`patches/jdk8u_android_aarch64_c1_explicit_null_checks.diff`.
+The first runtime layer makes HotSpot C2 keep its Java null checks explicit instead
+of turning them into implicit SIGSEGV traps. The second layer extends the same
+signal-free behavior to C1 managed-object field and array loads/stores, including
+the direct C1 null-check operation, by branching on the object register to the
+normal Runtime1 NPE/deoptimization path. Unsafe/native-address accesses retain
+their existing semantics. Java exception behavior is intended to remain unchanged;
 this is a runtime build change and does not require or expose a
-`-XX:-ImplicitNullChecks` flag. Interpreter, C1, template, method-handle, and vtable
-null-check paths remain unchanged until they have separate lifecycle and exception
-dispatch validation. The older universal Android portability patch also has a
-current-context companion, `patches/jdk8u_android_flags_fix.diff`, because its
-`flags.m4` C++11 hunk no longer matches the pinned `jdk8u482` source; the build
-script applies that companion explicitly and verifies the resulting setting.
+`-XX:-ImplicitNullChecks` flag. The C1 layer is still a test-only candidate until
+device lifecycle, fallback, crash-preservation, correctness, and performance gates
+pass. Interpreter, template, method-handle, and vtable null-check paths remain
+unchanged until they have separate validation. The older universal Android
+portability patch also has a current-context companion,
+`patches/jdk8u_android_flags_fix.diff`, because its `flags.m4` C++11 hunk no longer
+matches the pinned `jdk8u482` source; the build script applies that companion
+explicitly and verifies the resulting setting.
 
 ### Setup
 #### Android
