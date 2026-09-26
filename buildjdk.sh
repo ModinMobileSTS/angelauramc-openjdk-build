@@ -64,7 +64,18 @@ cd openjdk
 # Apply patches
 git reset --hard
 if [[ "$BUILD_IOS" != "1" ]]; then
+  # The universal Android patch was authored against an older flags.m4 and
+  # leaves only this C++ standard hunk rejected on jdk8u482. Apply its
+  # current-context companion after the broad portability patch so the
+  # intended Android C++11 setting is not silently omitted.
+  rm -f common/autoconf/flags.m4.rej
   git apply --reject --whitespace=fix ../patches/jdk8u_android.diff || echo "git apply failed (universal patch set)"
+  if grep -Fq '$2CXXSTD_CXXFLAG="-std=gnu++98"' common/autoconf/flags.m4; then
+    git apply --whitespace=fix ../patches/jdk8u_android_flags_fix.diff
+    rm -f common/autoconf/flags.m4.rej
+  fi
+  grep -F '$2CXXSTD_CXXFLAG="-std=gnu++11"' common/autoconf/flags.m4 >/dev/null
+  test ! -e common/autoconf/flags.m4.rej
   if [[ "$TARGET_JDK" != "aarch32" ]]; then
     git apply --reject --whitespace=fix ../patches/jdk8u_android_main.diff || echo "git apply failed (main non-universal patch set)"
   else

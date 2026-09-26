@@ -1,0 +1,11 @@
+--- a/common/autoconf/flags.m4
++++ b/common/autoconf/flags.m4
+@@ -443,7 +443,7 @@
+       LEGACY_HOST_LDFLAGS="$LEGACY_HOST_LDFLAGS -Wl,-z,relro"
+       LEGACY_TARGET_LDFLAGS="$LEGACY_TARGET_LDFLAGS -Wl,-z,relro"
+     fi
+-    $2CXXSTD_CXXFLAG="-std=gnu++98"
++    $2CXXSTD_CXXFLAG="-std=gnu++11"
+     FLAGS_CXX_COMPILER_CHECK_ARGUMENTS([[$]$2CXXSTD_CXXFLAG -Werror],
+                                        [], [$2CXXSTD_CXXFLAG=""])
+     $2CXXFLAGS_JDK="${$2CXXFLAGS_JDK} ${$2CXXSTD_CXXFLAG}"
