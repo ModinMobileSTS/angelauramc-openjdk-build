@@ -1,0 +1,150 @@
+diff --git a/hotspot/src/cpu/aarch64/vm/c1_LIRAssembler_aarch64.cpp b/hotspot/src/cpu/aarch64/vm/c1_LIRAssembler_aarch64.cpp
+index 35d34a08..3686229d 100644
+--- a/hotspot/src/cpu/aarch64/vm/c1_LIRAssembler_aarch64.cpp
++++ b/hotspot/src/cpu/aarch64/vm/c1_LIRAssembler_aarch64.cpp
+@@ -178,6 +178,71 @@ static jlong as_long(LIR_Opr data) {
+   return result;
+ }
+ 
++// C1's implicit null checks rely on a faulting load being translated by the
++// signal handler.  On Android AArch64 that path can be unusually expensive,
++// so use a normal branch for managed-object memory accesses and enter the
++// same Runtime1 exception path directly when the base is null.
++class C1ExplicitNullCheckStub: public CodeStub {
++ private:
++  CodeEmitInfo* _info;
++
++ public:
++  C1ExplicitNullCheckStub(CodeEmitInfo* info) : _info(info) {
++    assert(info != NULL, "null check requires debug information");
++  }
++
++  virtual CodeEmitInfo* info() const { return _info; }
++
++  virtual void emit_code(LIR_Assembler* ce) {
++    ce->masm()->bind(_entry);
++    address entry = Runtime1::entry_for(
++        _info->deoptimize_on_exception()
++            ? Runtime1::predicate_failed_trap_id
++            : Runtime1::throw_null_pointer_exception_id);
++    ce->masm()->far_call(RuntimeAddress(entry));
++    ce->add_call_info_here(_info);
++    ce->verify_oop_map(_info);
++    debug_only(ce->masm()->should_not_reach_here());
++  }
++
++  virtual bool is_exception_throw_stub() const { return true; }
++
++#ifndef PRODUCT
++  virtual void print_name(outputStream* out) const {
++    out->print("C1ExplicitNullCheckStub");
++  }
++#endif
++};
++
++static bool emit_explicit_null_check(LIR_Assembler* ce, LIR_Address* addr,
++                                     CodeEmitInfo* info) {
++  if (ImplicitNullChecks || info == NULL ||
++      (addr->base()->type() != T_OBJECT && addr->base()->type() != T_ARRAY)) {
++    return false;
++  }
++
++  Register base = addr->base()->as_pointer_register();
++  C1ExplicitNullCheckStub* stub = new C1ExplicitNullCheckStub(info);
++  Label not_null;
++  ce->masm()->cbnz(base, not_null);
++  ce->masm()->b(*stub->entry());
++  ce->masm()->bind(not_null);
++  ce->append_code_stub(stub);
++  return true;
++}
++
++void LIR_Assembler::explicit_null_check(Register base, CodeEmitInfo* info) {
++  assert(!ImplicitNullChecks, "only used for explicit-null-check builds");
++  assert(info != NULL, "null check requires debug information");
++
++  C1ExplicitNullCheckStub* stub = new C1ExplicitNullCheckStub(info);
++  Label not_null;
++  __ cbnz(base, not_null);
++  __ b(*stub->entry());
++  __ bind(not_null);
++  append_code_stub(stub);
++}
++
+ Address LIR_Assembler::as_Address(LIR_Address* addr, Register tmp) {
+   Register base = addr->base()->as_pointer_register();
+   LIR_Opr opr = addr->index();
+@@ -751,7 +816,8 @@ void LIR_Assembler::const2mem(LIR_Opr src, LIR_Opr dest, BasicType type, CodeEmi
+     ShouldNotReachHere();
+   }
+ 
+-  if (info) add_debug_info_for_null_check_here(info);
++  bool explicit_null_check = emit_explicit_null_check(this, to_addr, info);
++  if (info && !explicit_null_check) add_debug_info_for_null_check_here(info);
+   (_masm->*insn)(zr, as_Address(to_addr, rscratch1));
+ }
+ 
+@@ -855,6 +921,7 @@ void LIR_Assembler::reg2mem(LIR_Opr src, LIR_Opr dest, BasicType type, LIR_Patch
+     }
+   }
+ 
++  bool explicit_null_check = emit_explicit_null_check(this, to_addr, info);
+   int null_check_here = code_offset();
+   switch (type) {
+     case T_FLOAT: {
+@@ -909,7 +976,7 @@ void LIR_Assembler::reg2mem(LIR_Opr src, LIR_Opr dest, BasicType type, LIR_Patch
+     default:
+       ShouldNotReachHere();
+   }
+-  if (info != NULL) {
++  if (info != NULL && !explicit_null_check) {
+     add_debug_info_for_null_check(null_check_here, info);
+   }
+ }
+@@ -1005,7 +1072,8 @@ void LIR_Assembler::mem2reg(LIR_Opr src, LIR_Opr dest, BasicType type, LIR_Patch
+     return;
+   }
+ 
+-  if (info != NULL) {
++  bool explicit_null_check = emit_explicit_null_check(this, from_addr, info);
++  if (info != NULL && !explicit_null_check) {
+     add_debug_info_for_null_check_here(info);
+   }
+   int null_check_here = code_offset();
+diff --git a/hotspot/src/cpu/aarch64/vm/c1_LIRAssembler_aarch64.hpp b/hotspot/src/cpu/aarch64/vm/c1_LIRAssembler_aarch64.hpp
+index 6986878d..c75ee223 100644
+--- a/hotspot/src/cpu/aarch64/vm/c1_LIRAssembler_aarch64.hpp
++++ b/hotspot/src/cpu/aarch64/vm/c1_LIRAssembler_aarch64.hpp
+@@ -70,6 +70,7 @@ friend class ArrayCopyStub;
+   void init() { tableswitch_count = 0; }
+ 
+   void deoptimize_trap(CodeEmitInfo *info);
++  void explicit_null_check(Register base, CodeEmitInfo* info);
+ 
+ public:
+ 
+diff --git a/hotspot/src/share/vm/c1/c1_LIRAssembler.cpp b/hotspot/src/share/vm/c1/c1_LIRAssembler.cpp
+index e5cd19f1..7f4107fb 100644
+--- a/hotspot/src/share/vm/c1/c1_LIRAssembler.cpp
++++ b/hotspot/src/share/vm/c1/c1_LIRAssembler.cpp
+@@ -595,10 +595,18 @@ void LIR_Assembler::emit_op1(LIR_Op1* op) {
+ 
+     case lir_null_check:
+       if (GenerateCompilerNullChecks) {
+-        add_debug_info_for_null_check_here(op->info());
+-
+         if (op->in_opr()->is_single_cpu()) {
++#ifdef TARGET_ARCH_aarch64
++          if (!ImplicitNullChecks) {
++            explicit_null_check(op->in_opr()->as_register(), op->info());
++          } else {
++            add_debug_info_for_null_check_here(op->info());
++            _masm->null_check(op->in_opr()->as_register());
++          }
++#else
++          add_debug_info_for_null_check_here(op->info());
+           _masm->null_check(op->in_opr()->as_register());
++#endif
+         } else {
+           Unimplemented();
+         }
