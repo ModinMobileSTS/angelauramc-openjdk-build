@@ -1,0 +1,11 @@
+diff --git a/hotspot/src/cpu/aarch64/vm/globals_aarch64.hpp b/hotspot/src/cpu/aarch64/vm/globals_aarch64.hpp
+index a4c423237f..cb01b56c56 100644
+--- a/hotspot/src/cpu/aarch64/vm/globals_aarch64.hpp
++++ b/hotspot/src/cpu/aarch64/vm/globals_aarch64.hpp
+@@ -41,3 +41,5 @@
+-define_pd_global(bool, ImplicitNullChecks,       true);  // Generate code for implicit null checks
++// Keep C2 null checks explicit on Android AArch64.  This preserves the Java
++// exception path while avoiding a SIGSEGV for every ordinary null dereference.
++define_pd_global(bool, ImplicitNullChecks,       false); // Generate code for implicit null checks
+ define_pd_global(bool, TrapBasedNullChecks,  false);
+ define_pd_global(bool, UncommonNullCast,         true);  // Uncommon-trap NULLs passed to check cast

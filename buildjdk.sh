@@ -70,6 +70,9 @@ if [[ "$BUILD_IOS" != "1" ]]; then
   else
     git apply --reject --whitespace=fix ../patches/jdk8u_android_aarch32.diff || echo "git apply failed (aarch32 non-universal patch set)"
   fi
+  if [[ "$TARGET_JDK" == "aarch64" ]]; then
+    git apply --whitespace=fix ../patches/jdk8u_android_aarch64_explicit_null_checks.diff
+  fi
   if [[ "$TARGET_JDK" == "x86" ]]; then
     git apply --reject --whitespace=fix ../patches/jdk8u_android_page_trap_fix.diff || echo "git apply failed (x86 page trap fix)"
   fi

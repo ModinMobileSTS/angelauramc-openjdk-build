@@ -6,6 +6,11 @@ Based on [Java for Android](http://openjdk.java.net/projects/mobile/android.html
 
 ## Building 
 
+The Android AArch64 build applies `patches/jdk8u_android_aarch64_explicit_null_checks.diff`.
+It makes HotSpot C2 keep null checks explicit instead of turning ordinary Java null
+checks into implicit SIGSEGV traps. Java exception behavior is unchanged; this is a
+runtime build change and does not require or expose a `-XX:-ImplicitNullChecks` flag.
+
 ### Setup
 #### Android
 - Download Android NDK r10e from https://developer.android.com/ndk/downloads/older_releases.html and place it in this directory (Can't automatically download because of EULA)
