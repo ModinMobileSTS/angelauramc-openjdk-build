@@ -40,10 +40,10 @@ index fd1ea765..977e307a 100644
  
    cmp_klass(receiver, iCache, rscratch1);
 diff --git a/hotspot/src/cpu/aarch64/vm/interp_masm_aarch64.cpp b/hotspot/src/cpu/aarch64/vm/interp_masm_aarch64.cpp
-index f1a846f1..de09bf89 100644
+index f1a846f1..0048f861 100644
 --- a/hotspot/src/cpu/aarch64/vm/interp_masm_aarch64.cpp
 +++ b/hotspot/src/cpu/aarch64/vm/interp_masm_aarch64.cpp
-@@ -38,9 +38,32 @@
+@@ -38,9 +38,35 @@
  #include "runtime/basicLock.hpp"
  #include "runtime/biasedLocking.hpp"
  #include "runtime/sharedRuntime.hpp"
@@ -67,7 +67,10 @@ index f1a846f1..de09bf89 100644
 +#else
 +  Label not_null;
 +  cbnz(reg, not_null);
-+  b(Interpreter::throw_NullPointerException_entry());
++  // The template interpreter is not a CodeCache blob and can be more than
++  // AArch64's +/-128 MiB direct-branch range away from this codelet.
++  movptr(rscratch1, (uintptr_t)(address)Interpreter::throw_NullPointerException_entry());
++  br(rscratch1);
 +  bind(not_null);
 +#endif
 +}
@@ -103,7 +106,7 @@ index bc761f50..5e1b1dd3 100644
    // Object locking
    void lock_object  (Register lock_reg);
 diff --git a/hotspot/src/cpu/aarch64/vm/methodHandles_aarch64.cpp b/hotspot/src/cpu/aarch64/vm/methodHandles_aarch64.cpp
-index 72879025..3d055903 100644
+index 72879025..d7cbc2ec 100644
 --- a/hotspot/src/cpu/aarch64/vm/methodHandles_aarch64.cpp
 +++ b/hotspot/src/cpu/aarch64/vm/methodHandles_aarch64.cpp
 @@ -30,6 +30,7 @@
@@ -114,7 +117,7 @@ index 72879025..3d055903 100644
  
  #define __ _masm->
  
-@@ -41,6 +42,31 @@
+@@ -41,6 +42,32 @@
  
  #define BIND(label) bind(label); BLOCK_COMMENT(#label ":")
  
@@ -135,9 +138,10 @@ index 72879025..3d055903 100644
 +  if (for_compiler_entry) {
 +    masm->far_jump(RuntimeAddress(StubRoutines::throw_NullPointerException_at_call_entry()));
 +  } else {
-+    // The template interpreter entry is not a CodeCache blob, so far_jump()
-+    // cannot be used here (it asserts that its target is in CodeCache).
-+    masm->b(Interpreter::throw_NullPointerException_entry());
++    // The template interpreter is not a CodeCache blob and can be more than
++    // AArch64's +/-128 MiB direct-branch range away from this codelet.
++    masm->movptr(rscratch1, (uintptr_t)(address)Interpreter::throw_NullPointerException_entry());
++    masm->br(rscratch1);
 +  }
 +#endif
 +  masm->bind(not_null);
@@ -224,3 +228,37 @@ index 59d5b04d..2e5f0239 100644
    return size;
  
    // In order to tune these parameters, run the JVM with VM options
+diff --git a/hotspot/src/cpu/aarch64/vm/stubGenerator_aarch64.cpp b/hotspot/src/cpu/aarch64/vm/stubGenerator_aarch64.cpp
+index 0cfc5d5e..75abc232 100644
+--- a/hotspot/src/cpu/aarch64/vm/stubGenerator_aarch64.cpp
++++ b/hotspot/src/cpu/aarch64/vm/stubGenerator_aarch64.cpp
+@@ -4339,6 +4339,16 @@ class StubGenerator: public StubCodeGenerator {
+ 
+     StubRoutines::_forward_exception_entry = generate_forward_exception();
+ 
++    // Adapter handlers can be generated while primordial classes are being
++    // initialized, before StubRoutines::initialize2().  Make the call-site
++    // NPE entry available in phase one so explicit receiver checks never see
++    // a null target during early adapter generation.
++    StubRoutines::_throw_NullPointerException_at_call_entry =
++      generate_throw_exception("NullPointerException at call throw_exception",
++                               CAST_FROM_FN_PTR(address,
++                                                SharedRuntime::
++                                                throw_NullPointerException_at_call));
++
+     StubRoutines::_call_stub_entry =
+       generate_call_stub(StubRoutines::_call_stub_return_address);
+ 
+@@ -4373,12 +4383,6 @@ class StubGenerator: public StubCodeGenerator {
+                                                 SharedRuntime::
+                                                 throw_IncompatibleClassChangeError));
+ 
+-    StubRoutines::_throw_NullPointerException_at_call_entry =
+-      generate_throw_exception("NullPointerException at call throw_exception",
+-                               CAST_FROM_FN_PTR(address,
+-                                                SharedRuntime::
+-                                                throw_NullPointerException_at_call));
+-
+     // arraycopy stubs used by compilers
+     generate_arraycopy_stubs();
+ 

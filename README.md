@@ -23,7 +23,12 @@ pass. The third layer keeps AArch64 interpreter template null checks on the
 interpreter NPE entry, adds explicit checks to C1 locking and inline-cache
 receivers, method-handle dispatch, the C2-to-interpreter and JNI receiver
 adapters, and vtable/itable receiver stubs. Compiler/adapter stubs use the
-normal call-site NPE entry; native and Unsafe address paths are not changed.
+normal call-site NPE entry; that entry is generated in the initial stub phase
+because adapter creation can occur before the second stub phase. This avoids a
+null relocation target during VM startup. Template-interpreter NPE branches
+use an indirect absolute jump instead of AArch64's range-limited direct branch,
+avoiding the `Field too big for insn` startup abort. Native and Unsafe address
+paths are not changed.
 This layer is also test-only pending the same device validation. The older universal Android
 portability patch also has a current-context companion,
 `patches/jdk8u_android_flags_fix.diff`, because its `flags.m4` C++11 hunk no longer
