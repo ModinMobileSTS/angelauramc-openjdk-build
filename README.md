@@ -8,7 +8,8 @@ Based on [Java for Android](http://openjdk.java.net/projects/mobile/android.html
 
 The Android AArch64 build applies
 `patches/jdk8u_android_aarch64_explicit_null_checks.diff` and
-`patches/jdk8u_android_aarch64_c1_explicit_null_checks.diff`.
+`patches/jdk8u_android_aarch64_c1_explicit_null_checks.diff`, followed by
+`patches/jdk8u_android_aarch64_interpreter_explicit_null_checks.diff`.
 The first runtime layer makes HotSpot C2 keep its Java null checks explicit instead
 of turning them into implicit SIGSEGV traps. The second layer extends the same
 signal-free behavior to C1 managed-object field and array loads/stores, including
@@ -18,8 +19,12 @@ their existing semantics. Java exception behavior is intended to remain unchange
 this is a runtime build change and does not require or expose a
 `-XX:-ImplicitNullChecks` flag. The C1 layer is still a test-only candidate until
 device lifecycle, fallback, crash-preservation, correctness, and performance gates
-pass. Interpreter, template, method-handle, and vtable null-check paths remain
-unchanged until they have separate validation. The older universal Android
+pass. The third layer keeps AArch64 interpreter template null checks on the
+interpreter NPE entry, adds explicit checks to C1 locking and inline-cache
+receivers, method-handle dispatch, the C2-to-interpreter and JNI receiver
+adapters, and vtable/itable receiver stubs. Compiler/adapter stubs use the
+normal call-site NPE entry; native and Unsafe address paths are not changed.
+This layer is also test-only pending the same device validation. The older universal Android
 portability patch also has a current-context companion,
 `patches/jdk8u_android_flags_fix.diff`, because its `flags.m4` C++11 hunk no longer
 matches the pinned `jdk8u482` source; the build script applies that companion

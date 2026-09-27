@@ -1,0 +1,226 @@
+diff --git a/hotspot/src/cpu/aarch64/vm/c1_LIRAssembler_aarch64.cpp b/hotspot/src/cpu/aarch64/vm/c1_LIRAssembler_aarch64.cpp
+index 3686229d..0aa3522c 100644
+--- a/hotspot/src/cpu/aarch64/vm/c1_LIRAssembler_aarch64.cpp
++++ b/hotspot/src/cpu/aarch64/vm/c1_LIRAssembler_aarch64.cpp
+@@ -2669,9 +2669,14 @@ void LIR_Assembler::emit_lock(LIR_OpLock* op) {
+       scratch = op->scratch_opr()->as_register();
+     }
+     assert(BasicLock::displaced_header_offset_in_bytes() == 0, "lock_reg must point to the displaced header");
++    if (!ImplicitNullChecks && op->info() != NULL) {
++      // lock_object() contains managed-object loads of its own.  Do not let
++      // the first header access become an Android SIGSEGV null check.
++      explicit_null_check(obj, op->info());
++    }
+     // add debug info for NullPointerException only if one is possible
+     int null_check_offset = __ lock_object(hdr, obj, lock, scratch, *op->stub()->entry());
+-    if (op->info() != NULL) {
++    if (ImplicitNullChecks && op->info() != NULL) {
+       add_debug_info_for_null_check(null_check_offset, op->info());
+     }
+     // done
+diff --git a/hotspot/src/cpu/aarch64/vm/c1_MacroAssembler_aarch64.cpp b/hotspot/src/cpu/aarch64/vm/c1_MacroAssembler_aarch64.cpp
+index fd1ea765..977e307a 100644
+--- a/hotspot/src/cpu/aarch64/vm/c1_MacroAssembler_aarch64.cpp
++++ b/hotspot/src/cpu/aarch64/vm/c1_MacroAssembler_aarch64.cpp
+@@ -394,8 +394,14 @@ void C1_MacroAssembler::allocate_array(Register obj, Register len, Register t1,
+ 
+ void C1_MacroAssembler::inline_cache_check(Register receiver, Register iCache) {
+   verify_oop(receiver);
+-  // explicit NULL check not needed since load from [klass_offset] causes a trap
+-  // check against inline cache
++  if (!ImplicitNullChecks) {
++    Label receiver_not_null;
++    cbnz(receiver, receiver_not_null);
++    far_jump(RuntimeAddress(StubRoutines::throw_NullPointerException_at_call_entry()));
++    bind(receiver_not_null);
++  }
++  // Check against the inline cache.  With implicit checks enabled the klass
++  // load below retains its original null-fault behavior.
+   assert(!MacroAssembler::needs_explicit_null_check(oopDesc::klass_offset_in_bytes()), "must add explicit null check");
+ 
+   cmp_klass(receiver, iCache, rscratch1);
+diff --git a/hotspot/src/cpu/aarch64/vm/interp_masm_aarch64.cpp b/hotspot/src/cpu/aarch64/vm/interp_masm_aarch64.cpp
+index f1a846f1..de09bf89 100644
+--- a/hotspot/src/cpu/aarch64/vm/interp_masm_aarch64.cpp
++++ b/hotspot/src/cpu/aarch64/vm/interp_masm_aarch64.cpp
+@@ -38,9 +38,32 @@
+ #include "runtime/basicLock.hpp"
+ #include "runtime/biasedLocking.hpp"
+ #include "runtime/sharedRuntime.hpp"
++#include "runtime/stubRoutines.hpp"
+ #include "runtime/thread.inline.hpp"
+ 
+ 
++void InterpreterMacroAssembler::null_check(Register reg, int offset) {
++  if (ImplicitNullChecks) {
++    MacroAssembler::null_check(reg, offset);
++    return;
++  }
++
++#ifdef CC_INTERP
++  // The C++ interpreter has no TemplateInterpreter exception entry.  Keep
++  // the same call-site convention used by the other non-frame paths.
++  Label not_null;
++  cbnz(reg, not_null);
++  far_jump(RuntimeAddress(StubRoutines::throw_NullPointerException_at_call_entry()));
++  bind(not_null);
++#else
++  Label not_null;
++  cbnz(reg, not_null);
++  b(Interpreter::throw_NullPointerException_entry());
++  bind(not_null);
++#endif
++}
++
++
+ void InterpreterMacroAssembler::narrow(Register result) {
+ 
+   // Get method->_constMethod->_result_type
+diff --git a/hotspot/src/cpu/aarch64/vm/interp_masm_aarch64.hpp b/hotspot/src/cpu/aarch64/vm/interp_masm_aarch64.hpp
+index bc761f50..5e1b1dd3 100644
+--- a/hotspot/src/cpu/aarch64/vm/interp_masm_aarch64.hpp
++++ b/hotspot/src/cpu/aarch64/vm/interp_masm_aarch64.hpp
+@@ -201,17 +201,10 @@ class InterpreterMacroAssembler: public MacroAssembler {
+                          bool notify_jvmdi = true);
+ #endif // CC_INTERP
+ 
+-  // FIXME: Give us a valid frame at a null check.
+-  virtual void null_check(Register reg, int offset = -1) {
+-// #ifdef ASSERT
+-//     save_bcp();
+-//     set_last_Java_frame(esp, rfp, (address) pc());
+-// #endif
+-    MacroAssembler::null_check(reg, offset);
+-// #ifdef ASSERT
+-//     reset_last_Java_frame(true);
+-// #endif
+-  }
++  // Keep managed-object null checks on the interpreter's normal Java
++  // exception path when Android AArch64 implicit null checks are disabled.
++  // The old implementation deliberately faulted through SIGSEGV.
++  virtual void null_check(Register reg, int offset = -1);
+ 
+   // Object locking
+   void lock_object  (Register lock_reg);
+diff --git a/hotspot/src/cpu/aarch64/vm/methodHandles_aarch64.cpp b/hotspot/src/cpu/aarch64/vm/methodHandles_aarch64.cpp
+index 72879025..3d055903 100644
+--- a/hotspot/src/cpu/aarch64/vm/methodHandles_aarch64.cpp
++++ b/hotspot/src/cpu/aarch64/vm/methodHandles_aarch64.cpp
+@@ -30,6 +30,7 @@
+ #include "interpreter/interpreterRuntime.hpp"
+ #include "memory/allocation.inline.hpp"
+ #include "prims/methodHandles.hpp"
++#include "runtime/stubRoutines.hpp"
+ 
+ #define __ _masm->
+ 
+@@ -41,6 +42,31 @@
+ 
+ #define BIND(label) bind(label); BLOCK_COMMENT(#label ":")
+ 
++static void null_check_receiver(MacroAssembler* masm, Register receiver,
++                                int offset, bool for_compiler_entry) {
++  if (ImplicitNullChecks) {
++    masm->null_check(receiver, offset);
++    return;
++  }
++
++  Label not_null;
++  masm->cbnz(receiver, not_null);
++#ifdef CC_INTERP
++  (void)for_compiler_entry;
++  // The C++ interpreter has no TemplateInterpreter exception entry.
++  masm->far_jump(RuntimeAddress(StubRoutines::throw_NullPointerException_at_call_entry()));
++#else
++  if (for_compiler_entry) {
++    masm->far_jump(RuntimeAddress(StubRoutines::throw_NullPointerException_at_call_entry()));
++  } else {
++    // The template interpreter entry is not a CodeCache blob, so far_jump()
++    // cannot be used here (it asserts that its target is in CodeCache).
++    masm->b(Interpreter::throw_NullPointerException_entry());
++  }
++#endif
++  masm->bind(not_null);
++}
++
+ void MethodHandles::load_klass_from_Class(MacroAssembler* _masm, Register klass_reg) {
+   if (VerifyMethodHandles)
+     verify_klass(_masm, klass_reg, SystemDictionary::WK_KLASS_ENUM_NAME(java_lang_Class),
+@@ -133,6 +159,9 @@ void MethodHandles::jump_to_lambda_form(MacroAssembler* _masm,
+ 
+   // Load the invoker, as MH -> MH.form -> LF.vmentry
+   __ verify_oop(recv);
++  if (!ImplicitNullChecks) {
++    null_check_receiver(_masm, recv, -1, for_compiler_entry);
++  }
+   __ load_heap_oop(method_temp, Address(recv, NONZERO(java_lang_invoke_MethodHandle::form_offset_in_bytes())));
+   __ verify_oop(method_temp);
+   __ load_heap_oop(method_temp, Address(method_temp, NONZERO(java_lang_invoke_LambdaForm::vmentry_offset_in_bytes())));
+@@ -287,10 +316,11 @@ void MethodHandles::generate_method_handle_dispatch(MacroAssembler* _masm,
+       __ verify_oop(receiver_reg);
+       if (iid == vmIntrinsics::_linkToSpecial) {
+         // Don't actually load the klass; just null-check the receiver.
+-        __ null_check(receiver_reg);
++        null_check_receiver(_masm, receiver_reg, -1, for_compiler_entry);
+       } else {
+         // load receiver klass itself
+-        __ null_check(receiver_reg, oopDesc::klass_offset_in_bytes());
++        null_check_receiver(_masm, receiver_reg,
++                            oopDesc::klass_offset_in_bytes(), for_compiler_entry);
+         __ load_klass(temp1_recv_klass, receiver_reg);
+         __ verify_klass_ptr(temp1_recv_klass);
+       }
+diff --git a/hotspot/src/cpu/aarch64/vm/sharedRuntime_aarch64.cpp b/hotspot/src/cpu/aarch64/vm/sharedRuntime_aarch64.cpp
+index 1bb384e7..411bc777 100644
+--- a/hotspot/src/cpu/aarch64/vm/sharedRuntime_aarch64.cpp
++++ b/hotspot/src/cpu/aarch64/vm/sharedRuntime_aarch64.cpp
+@@ -33,6 +33,7 @@
+ #include "oops/compiledICHolder.hpp"
+ #include "prims/jvmtiRedefineClassesTrace.hpp"
+ #include "runtime/sharedRuntime.hpp"
++#include "runtime/stubRoutines.hpp"
+ #include "runtime/vframeArray.hpp"
+ #include "vmreg_aarch64.inline.hpp"
+ #ifdef COMPILER1
+@@ -660,6 +661,12 @@ AdapterHandlerEntry* SharedRuntime::generate_i2c2i_adapters(MacroAssembler *masm
+ 
+   {
+     __ block_comment("c2i_unverified_entry {");
++    if (!ImplicitNullChecks) {
++      Label receiver_not_null;
++      __ cbnz(receiver, receiver_not_null);
++      __ far_jump(RuntimeAddress(StubRoutines::throw_NullPointerException_at_call_entry()));
++      __ bind(receiver_not_null);
++    }
+     __ load_klass(rscratch1, receiver);
+     __ ldr(tmp, Address(holder, CompiledICHolder::holder_klass_offset()));
+     __ cmp(rscratch1, tmp);
+@@ -1449,6 +1456,12 @@ nmethod* SharedRuntime::generate_native_wrapper(MacroAssembler* masm,
+ 
+   assert_different_registers(ic_reg, receiver, rscratch1);
+   __ verify_oop(receiver);
++  if (!ImplicitNullChecks) {
++    Label receiver_not_null;
++    __ cbnz(receiver, receiver_not_null);
++    __ far_jump(RuntimeAddress(StubRoutines::throw_NullPointerException_at_call_entry()));
++    __ bind(receiver_not_null);
++  }
+   __ cmp_klass(receiver, ic_reg, rscratch1);
+   __ br(Assembler::EQ, hit);
+ 
+diff --git a/hotspot/src/cpu/aarch64/vm/vtableStubs_aarch64.cpp b/hotspot/src/cpu/aarch64/vm/vtableStubs_aarch64.cpp
+index 59d5b04d..2e5f0239 100644
+--- a/hotspot/src/cpu/aarch64/vm/vtableStubs_aarch64.cpp
++++ b/hotspot/src/cpu/aarch64/vm/vtableStubs_aarch64.cpp
+@@ -230,6 +230,11 @@ int VtableStub::pd_code_size_limit(bool is_vtable_stub) {
+     return 1000;
+   }
+   int size = is_vtable_stub ? 60 : 192; // Plain + safety
++  // The explicit receiver check adds cbnz plus a direct or far branch to the
++  // call-site NPE stub when Android AArch64 implicit checks are disabled.
++  if (!ImplicitNullChecks) {
++    size += 16;
++  }
+   return size;
+ 
+   // In order to tune these parameters, run the JVM with VM options
